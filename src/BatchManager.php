@@ -247,7 +247,7 @@ class BatchManager {
     }
     drupal_set_message($message);
 
-    return new RedirectResponse(\Drupal::url('wbm2cm.overview', [], ['absolute' => TRUE]));
+    return new RedirectResponse(\Drupal\Core\Url::fromRoute('wbm2cm.overview', [], ['absolute' => TRUE]));
   }
 
   /**
