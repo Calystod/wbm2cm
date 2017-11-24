@@ -7,6 +7,7 @@ use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Extension\ModuleInstallerInterface;
 use Drupal\Core\KeyValueStore\KeyValueFactoryInterface;
 use Drupal\workflows\Entity\Workflow;
+use Drupal\Core\Database\Database;
 use Psr\Log\LoggerInterface;
 
 /**
@@ -211,23 +212,20 @@ class MigrateManager {
   /**
    * Save the Workbench Moderation states on all entities.
    */
-  public function saveWorkbenchModerationSateMap() {
-    // @todo avoid needing to save enabled bundles?
-    // Collect all moderated bundles.
-    $this->entityTypeManager->clearCachedDefinitions();
-    // @todo consider leveraging WBM to get the list of enabled bundles?
-    $enabled_bundles = [];
-
-    $moderation_information = \Drupal::service('workbench_moderation.moderation_information');
-
-    $moderate_entity_types = array_filter(\Drupal::service('entity_type.manager')
-      ->getDefinitions(), function ($entity_type) use ($moderation_information) {
-      return $moderation_information->isModeratableEntityType($entity_type);
-    });
-    $data = [];
-    $nb_values = 0;
-
+  public function saveWorkbenchModerationSateMap(&$context) {
     if (empty($context['sandbox'])) {
+      // Collect all moderated bundles.
+      $this->entityTypeManager->clearCachedDefinitions();
+
+      $enabled_bundles = [];
+
+      $moderation_information = \Drupal::service('workbench_moderation.moderation_information');
+      $moderate_entity_types = array_filter(\Drupal::service('entity_type.manager')
+        ->getDefinitions(), function ($entity_type) use ($moderation_information) {
+        return $moderation_information->isModeratableEntityType($entity_type);
+      });
+      $data = [];
+
       foreach ($moderate_entity_types as $entity_type) {
 
         $bundles = \Drupal::service('entity_type.manager')
@@ -239,25 +237,31 @@ class MigrateManager {
               '%bundle_id' => $bundle->id(),
               '%entity_type' => $entity_type->id(),
             ]);
+
             $enabled_bundles[$entity_type->id()][] = $bundle->id();
 
-
-            // @TODO A voir
             // Save enabled bundles.
             $this->migrateStore->set('enabled_bundles', $enabled_bundles);
 
             // Collect entity state map and remove Workbench moderation_state field from
             // enabled bundles.
-            //    foreach ($enabled_bundles as $entity_type_id => $bundles) {
-            $entity_storage = $this->entityTypeManager->getStorage($entity_type->id());
-            //      foreach ($bundles as $bundle_id) {
             $this->logger->debug('Querying for all %bundle_id revisions...', [
               '%bundle_id' => $bundle->id(),
             ]);
+
             $revisions = \Drupal::entityQuery($entity_type->id())
               ->condition('type', $bundle->id())
               ->allRevisions()
               ->execute();
+
+            $revisions_current = \Drupal::entityQuery($entity_type->id())
+              ->condition('type', $bundle->id())
+              ->currentRevision()
+              ->execute();
+
+            $revisions = array_diff_key($revisions, $revisions_current);
+
+            $revisions = $revisions_current + $revisions;
 
             $revisions = array_map(function ($value) use ($entity_type, $bundle) {
               return [
@@ -275,60 +279,61 @@ class MigrateManager {
       $context['sandbox']['progress'] = 0;
       $context['sandbox']['current_index'] = 0;
       $context['sandbox']['values'] = $data;
-      $context['sandbox']['max'] = array_count_values($data);
+      $context['sandbox']['max'] = sizeof($data)/*50*/
+      ; //@TODO 50 is here for have tests more quick. Don't forget to remove it.
+      $context['sandbox']['current_running'] = 0;
 
     }
-    $limit = 5;
 
-    $revisions_process = array_slice($context['sandbox']['values'], $context['sandbox']['current_index'], $limit);
+    $limit = 50;
+
+    $revisions_process = array_slice($context['sandbox']['values'], $context['sandbox']['current_index'], $limit, TRUE);
+
+    $this->logger->info('Revision process: %revision', [
+      '%revision' => print_r($revisions_process, 1),
+    ]);
 
     foreach ($revisions_process as $revision_id => $info_revision) {
-      $data[$revision_id] = [
-        'id' => $info_revision['entity_id'],
-        'entity_type' => $info_revision['entity_type'],
-        'bundle_id' => $info_revision['bundle_id'],
-      ];
 
-      $entity = $entity_storage->loadRevision($revision_id);
-      $state_map_key = "state_map.{$entity_type->id()}.{$bundle->id()}.{$revision_id}";
-      $this->stateMapStore->set($state_map_key, $entity->moderation_state->target_id);
-      $this->logger->debug('Setting Workbench Moderation state field on id:%id, revision:%revision_id from %state to NULL', [
-        '%id' => $info_revision['entity_id'],
-        '%revision_id' => $revision_id,
-        '%state' => $entity->moderation_state->target_id,
-      ]);
-      $entity->moderation_state = NULL;
-      $entity->save();
+      $entity = \Drupal::entityTypeManager()
+        ->getStorage($info_revision['entity_type'])
+        ->loadRevision($revision_id);
+      if (!is_null($entity)) {
 
-      // Handle translations.
-      // Get all languages except the default (which we've already handled).
-      $languages = $entity->getTranslationLanguages(FALSE);
-      $language_ids = [];
-      foreach ($languages as $language) {
-        $language_ids[] = $language->getId();
+        $state_map_key = "state_map.{$info_revision['entity_type']}.{$info_revision['bundle_id']}.{$revision_id}";
+
+        $this->stateMapStore->set($state_map_key, $entity->moderation_state->target_id);
+
+
+        // Handle translations.
+        // Get all languages except the default (which we've already handled).
+        $languages = $entity->getTranslationLanguages(FALSE);
+        if (!empty($languages)) {
+          $language_ids = [];
+          foreach ($languages as $language) {
+            $language_ids[] = $language->getId();
+          }
+
+          foreach ($language_ids as $language_id) {
+            // @todo how to get all revisions for this translation?
+            $translated_entity = $entity->getTranslation($language_id);
+
+            $state_map_key = "state_map.{$info_revision['entity_type']}.{$info_revision['bundle_id']}.{$revision_id}.{$language_id}";
+
+            $this->stateMapStore->set($state_map_key, $translated_entity->moderation_state->target_id);
+
+          }
+        }
       }
-      $this->logger->debug('Found the following translations on id:%id, revision:%revision_id: %languages', [
-        '%id' => $info_revision['entity_id'],
-        '%revision_id' => $revision_id,
-        '%languages' => implode(', ', $language_ids),
-      ]);
-      foreach ($language_ids as $language_id) {
-        // @todo how to get all revisions for this translation?
-        $translated_entity = $entity->getTranslation($language_id);
-        $state_map_key = "state_map.{$entity_type->id()}.{$bundle->id()}.{$revision_id}.{$language_id}";
-        $this->stateMapStore->set($state_map_key, $translated_entity->moderation_state->target_id);
-        $this->logger->debug('Setting Workbench Moderation state field on id:%id, revision:%revision_id, lang:%lang from %state to NULL', [
+      else {
+        $this->logger->warning('Error with revision %revision_id, from the entity $id ', [
           '%id' => $info_revision['entity_id'],
           '%revision_id' => $revision_id,
-          '%lang' => $language_id,
-          '%state' => $entity->moderation_state->target_id,
         ]);
-        $translated_entity->moderation_state = NULL;
-        $translated_entity->save();
       }
+      $context['sandbox']['progress']++;
+      $context['sandbox']['current_index']++;
     }
-
-    $this->logger->notice('Workbench Moderation states have been removed from all entities and temporarily stored in key value storage.');
   }
 
   /**
@@ -338,6 +343,26 @@ class MigrateManager {
    * uninstall--the module installer will check for us.
    */
   public function uninstallWorkbenchModeration() {
+    $moderation_information = \Drupal::service('workbench_moderation.moderation_information');
+
+    foreach ($this->entityTypeManager->getDefinitions() as $entity_type) {
+      if ($moderation_information->isModeratableEntityType($entity_type)) {
+        $tables_to_update[] = $entity_type->getDataTable();
+        $tables_to_update[] = $entity_type->getRevisionDataTable();
+      }
+    }
+
+    $db_connection = Database::getConnection();
+
+    foreach ($tables_to_update as $table) {
+      if ($table && $db_connection->schema()
+          ->fieldExists($table, 'moderation_state')) {
+        $db_connection->update($table)
+          ->fields(['moderation_state' => NULL])
+          ->execute();
+      }
+    }
+
     $this->moduleInstaller->uninstall(['workbench_moderation'], FALSE);
     $this->logger->notice('Workbench Moderation module is uninstalled.');
   }
@@ -348,7 +373,8 @@ class MigrateManager {
    * Note: no need to check if the module is installed before calling
    * install--the module installer will check for us.
    */
-  public function installWorkflows() {
+  public
+  function installWorkflows() {
     $this->moduleInstaller->install(['workflows']);
     $this->logger->notice('Workflows module is installed.');
   }
@@ -359,7 +385,8 @@ class MigrateManager {
    * Note: no need to check if the module is installed before calling
    * install--the module installer will check for us.
    */
-  public function installContentModeration() {
+  public
+  function installContentModeration() {
     $this->moduleInstaller->install(['content_moderation']);
     $this->logger->notice('Content Moderation module is installed.');
   }
@@ -367,7 +394,8 @@ class MigrateManager {
   /**
    * Create the Workflow based on info from WBM states and transitions.
    */
-  public function recreateWorkbenchModerationWorkflow() {
+  public
+  function recreateWorkbenchModerationWorkflow() {
     $states = $this->migrateStore->get('states');
     $transitions = $this->migrateStore->get('transitions');
     $enabled_bundles = $this->migrateStore->get('enabled_bundles');
@@ -425,91 +453,145 @@ class MigrateManager {
   /**
    * Create the moderation states on all entities based on WBM data.
    */
-  public function recreateModerationStatesOnEntities() {
-    $enabled_bundles = $this->migrateStore->get('enabled_bundles');
+  public
+  function recreateModerationStatesOnEntities(&$context) {
+    if (empty($context['sandbox'])) {
 
-    foreach ($enabled_bundles as $entity_type_id => $bundles) {
-      $entity_storage = $this->entityTypeManager->getStorage($entity_type_id);
+      $enabled_bundles = $this->migrateStore->get('enabled_bundles');
+      $data = [];
 
-      foreach ($bundles as $bundle_id) {
-        // Get all entity revisions.
-        $this->logger->debug('Querying for all %bundle_id revisions...', [
-          '%bundle_id' => $bundle_id,
-        ]);
-        $entity_revisions = \Drupal::entityQuery($entity_type_id)
-          ->condition('type', $bundle_id)
-          ->allRevisions()
-          ->execute();
-        $this->logger->debug('Setting Content Moderation states on %bundle_id entities', [
-          '%bundle_id' => $bundle_id,
-        ]);
+      foreach ($enabled_bundles as $entity_type_id => $bundles) {
+        $entity_storage = $this->entityTypeManager->getStorage($entity_type_id);
 
-        // Update the state for all revisions if a state id is found.
-        foreach ($entity_revisions as $revision_id => $id) {
-          // Get the state if it exists.
-          $state_map_key = "state_map.{$entity_type_id}.{$bundle_id}.{$revision_id}";
-          $state_id = $this->stateMapStore->get($state_map_key);
-          if (!$state_id) {
-            $this->logger->debug('Skipping updating state on id:%id, revision:%revision_id because no state exists', [
-              '%id' => $entity->id(),
-              '%revision_id' => $revision_id,
-              '%state' => $state_id,
-            ]);
-            continue;
-          }
+        foreach ($bundles as $bundle_id) {
+          // Get all entity revisions.
+          $this->logger->debug('Querying for all %bundle_id revisions...', [
+            '%bundle_id' => $bundle_id,
+          ]);
+          $entity_revisions = \Drupal::entityQuery($entity_type_id)
+            ->condition('type', $bundle_id)
+            ->allRevisions()
+            ->execute();
 
-          // Set the state.
-          $entity = $entity_storage->loadRevision($revision_id);
-          $entity->moderation_state = $state_id;
-          $entity->save();
-          $this->logger->debug('Setting Workbench Moderation state field on id:%id, revision:%revision_id to %state', [
-            '%id' => $entity->id(),
-            '%revision_id' => $revision_id,
-            '%state' => $state_id,
+          $revisions_current = \Drupal::entityQuery($entity_type_id)
+            ->condition('type', $bundle_id)
+            ->currentRevision()
+            ->execute();
+
+          $entity_revisions = array_diff_key($entity_revisions, $revisions_current);
+
+          $entity_revisions = $revisions_current + $entity_revisions;
+
+          $this->logger->debug('Setting Content Moderation states on %bundle_id entities', [
+            '%bundle_id' => $bundle_id,
           ]);
 
-          // Remove the state from key value store to indicate the entity has
-          // been successfully updated.
-          $this->stateMapStore->delete($state_map_key);
+          $revisions = array_map(function ($value) use ($entity_type_id, $bundle_id) {
+            return [
+              'entity_id' => $value,
+              'entity_type' => $entity_type_id,
+              'bundle_id' => $bundle_id,
+            ];
+          }, $entity_revisions);
 
-          // Handle translations.
-          // Get all languages except the default (which we've already handled).
-          $languages = $entity->getTranslationLanguages(FALSE);
-          $language_ids = [];
-          foreach ($languages as $language) {
-            $language_ids[] = $language->getId();
-          }
-          foreach ($language_ids as $language_id) {
-            // Get the state if it exists.
-            // @todo how to get all revisions for this translation?
-            $translated_entity = $entity->getTranslation($language_id);
-            $state_map_key = "state_map.{$entity_type_id}.{$bundle_id}.{$revision_id}.{$language_id}";
-            $state_id = $this->stateMapStore->get($state_map_key);
-            if (!$state_id) {
-              $this->logger->debug('Skipping updating state on id:%id, revision:%revision_id, lang:%lang because no state exists', [
-                '%id' => $translated_entity->id(),
-                '%revision_id' => $revision_id,
-                '%lang' => $language_id,
-                '%state' => $state_id,
-              ]);
-              continue;
-            }
-
-            // Set the state.
-            $translated_entity->moderation_state = $state_id;
-            $translated_entity->save();
-            $this->logger->debug('Setting Workbench Moderation state field on id:%id, revision:%revision_id to %state', [
-              '%id' => $translated_entity->id(),
-              '%revision_id' => $revision_id,
-              '%state' => $state_id,
-            ]);
-
-            // Remove the state from key value store to indicate the entity has
-            // been successfully updated.
-            $this->stateMapStore->delete($state_map_key);
-          }
+          $data += $revisions;
         }
       }
+
+      $context['sandbox']['progress'] = 0;
+      $context['sandbox']['current_index'] = 0;
+      $context['sandbox']['values'] = $data;
+      $context['sandbox']['max'] = sizeof($data)/*50*/
+      ; //@TODO 50 is here for have tests more quick. Don't forget to remove it.
+      $context['sandbox']['current_running'] = 0;
+
+    }
+
+    $limit = 50;
+
+    $revisions_process = array_slice($context['sandbox']['values'], $context['sandbox']['current_index'], $limit, TRUE);
+
+    $this->logger->info('Revision process: %revision', [
+      '%revision' => print_r($revisions_process, 1),
+    ]);
+
+    // Update the state for all revisions if a state id is found.
+    foreach ($revisions_process as $revision_id => $info_revision) {
+
+      // Get the state if it exists.
+      $state_map_key = "state_map.{$info_revision['entity_type']}.{$info_revision['bundle_id']}.{$revision_id}";
+      $state_id = $this->stateMapStore->get($state_map_key);
+      $entity = \Drupal::entityTypeManager()
+        ->getStorage($info_revision['entity_type'])
+        ->loadRevision($revision_id);
+      if (!$state_id) {
+        $this->logger->debug('Skipping updating state on id:%id, revision:%revision_id because no state exists', [
+          '%id' => $entity->id(),
+          '%revision_id' => $revision_id,
+          '%state' => $state_id,
+        ]);
+
+        $context['sandbox']['progress']++;
+        $context['sandbox']['current_index']++;
+        continue;
+      }
+
+      // Set the state.
+      $entity = \Drupal::entityTypeManager()
+        ->getStorage($info_revision['entity_type'])
+        ->loadRevision($revision_id);
+      $entity->moderation_state = $state_id;
+      $entity->save();
+      $this->logger->debug('Setting Workbench Moderation state field on id:%id, revision:%revision_id to %state', [
+        '%id' => $entity->id(),
+        '%revision_id' => $revision_id,
+        '%state' => $state_id,
+      ]);
+
+      // Remove the state from key value store to indicate the entity has
+      // been successfully updated.
+      $this->stateMapStore->delete($state_map_key);
+
+      // Handle translations.
+      // Get all languages except the default (which we've already handled).
+      $languages = $entity->getTranslationLanguages(FALSE);
+      $language_ids = [];
+      foreach ($languages as $language) {
+        $language_ids[] = $language->getId();
+      }
+      foreach ($language_ids as $language_id) {
+        // Get the state if it exists.
+        // @todo how to get all revisions for this translation?
+        $translated_entity = $entity->getTranslation($language_id);
+
+        $state_map_key = "state_map.{$info_revision['entity_type']}.{$info_revision['bundle_id']}.{$revision_id}.{$language_id}";
+        $state_id = $this->stateMapStore->get($state_map_key);
+        if (!$state_id) {
+          $this->logger->debug('Skipping updating state on id:%id, revision:%revision_id, lang:%lang because no state exists', [
+            '%id' => $translated_entity->id(),
+            '%revision_id' => $revision_id,
+            '%lang' => $language_id,
+            '%state' => $state_id,
+          ]);
+          continue;
+        }
+
+        // Set the state.
+        $translated_entity->moderation_state = $state_id;
+        $translated_entity->save();
+        $this->logger->debug('Setting Workbench Moderation state field on id:%id, revision:%revision_id to %state', [
+          '%id' => $translated_entity->id(),
+          '%revision_id' => $revision_id,
+          '%state' => $state_id,
+        ]);
+
+        // Remove the state from key value store to indicate the entity has
+        // been successfully updated.
+        $this->stateMapStore->delete($state_map_key);
+      }
+
+      $context['sandbox']['progress']++;
+      $context['sandbox']['current_index']++;
     }
   }
 
@@ -520,7 +602,8 @@ class MigrateManager {
    *   - Any state used to manage progress of the migration, e.g. BatchManager.
    *   - The state map keys, which should be cleaned up during processing.
    */
-  public function cleanupKeyValue() {
+  public
+  function cleanupKeyValue() {
     $this->migrateStore->deleteMultiple([
       'states',
       'transitions',
@@ -533,7 +616,8 @@ class MigrateManager {
    *
    * Note: this should only be used during the module's uninstall.
    */
-  public function purgeAllKeyValueStores() {
+  public
+  function purgeAllKeyValueStores() {
     $this->migrateStore->deleteAll();
     $this->stateMapStore->deleteAll();
   }

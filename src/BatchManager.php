@@ -5,6 +5,7 @@ namespace Drupal\wbm2cm;
 use Drupal\Core\KeyValueStore\KeyValueFactoryInterface;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\HttpFoundation\RedirectResponse;
+use Drupal\Core\Url;
 
 /**
  * Manages communication between Batch API and the migration manager.
@@ -136,7 +137,8 @@ class BatchManager {
   }
 
   /**
-   * States and transitions are stored in key value (i.e. the Workflow entity is created).
+   * States and transitions are stored in key value (i.e. the Workflow entity
+   * is created).
    */
   public function step1(&$context) {
     if ($this->isStepSkipped('step1')) {
@@ -154,8 +156,25 @@ class BatchManager {
     if ($this->isStepSkipped('step2')) {
       return;
     }
-    $this->manager->saveWorkbenchModerationSateMap();
-    $context['message'] = 'Saving Workbench Moderation entity states to key value storage.';
+    $this->manager->saveWorkbenchModerationSateMap($context);
+    $context['sandbox']['current_running']++;
+    $context['message'] = t('Running Batch "@id"',
+      ['@id' => $context['sandbox']['current_running']]
+    );
+
+    // Inform the batch engine that we are not finished,
+    // and provide an estimation of the completion level we reached.
+    if ($context['sandbox']['progress'] != $context['sandbox']['max']) {
+      $context['finished'] = ($context['sandbox']['progress'] >= $context['sandbox']['max']);
+    }
+    \Drupal::logger('wbm2cm')->notice('Revision study until %index', [
+      '%index' => $context['sandbox']['current_index'],
+    ]);
+
+    if ($context['finished']) {
+      $this->setStepComplete('step2');
+      $context['message'] = 'Saving Workbench Moderation entity states to key value storage.';
+    }
   }
 
   /**
@@ -213,9 +232,26 @@ class BatchManager {
     if ($this->isStepSkipped('step7')) {
       return;
     }
-    $this->manager->recreateModerationStatesOnEntities();
-    $this->setStepComplete('step7');
-    $context['message'] = 'Importing entity moderation states from key value storage to Content Moderation.';
+    $this->manager->recreateModerationStatesOnEntities($context);
+    $context['sandbox']['current_running']++;
+    $context['message'] = t('Running Batch "@id"',
+      ['@id' => $context['sandbox']['current_running']]
+    );
+
+    // Inform the batch engine that we are not finished,
+    // and provide an estimation of the completion level we reached.
+    if ($context['sandbox']['progress'] != $context['sandbox']['max']) {
+      $context['finished'] = ($context['sandbox']['progress'] >= $context['sandbox']['max']);
+    }
+    \Drupal::logger('wbm2cm')->notice('Revision study until %index', [
+      '%index' => $context['sandbox']['current_index'],
+    ]);
+
+    if ($context['finished']) {
+      $this->setStepComplete('step7');
+      $context['message'] = 'Importing entity moderation states from key value storage to Content Moderation.';
+    }
+
   }
 
   /**
@@ -247,7 +283,8 @@ class BatchManager {
     }
     drupal_set_message($message);
 
-    return new RedirectResponse(\Drupal\Core\Url::fromRoute('wbm2cm.overview', [], ['absolute' => TRUE]));
+    return new RedirectResponse(Url::fromRoute('wbm2cm.overview', [], ['absolute' => TRUE])
+      ->toString());
   }
 
   /**
