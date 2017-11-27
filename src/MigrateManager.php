@@ -279,8 +279,7 @@ class MigrateManager {
       $context['sandbox']['progress'] = 0;
       $context['sandbox']['current_index'] = 0;
       $context['sandbox']['values'] = $data;
-      $context['sandbox']['max'] = sizeof($data)/*50*/
-      ; //@TODO 50 is here for have tests more quick. Don't forget to remove it.
+      $context['sandbox']['max'] = sizeof($data);
       $context['sandbox']['current_running'] = 0;
 
     }
@@ -501,8 +500,7 @@ class MigrateManager {
       $context['sandbox']['progress'] = 0;
       $context['sandbox']['current_index'] = 0;
       $context['sandbox']['values'] = $data;
-      $context['sandbox']['max'] = sizeof($data)/*50*/
-      ; //@TODO 50 is here for have tests more quick. Don't forget to remove it.
+      $context['sandbox']['max'] = sizeof($data);
       $context['sandbox']['current_running'] = 0;
 
     }
