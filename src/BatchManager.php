@@ -225,6 +225,31 @@ class BatchManager {
     $context['message'] = 'Importing states and transitions from key value storage to Workflows.';
   }
 
+  public function stepIntermediare(&$context) {
+    if ($this->isStepSkipped('stepIntermediare')) {
+      return;
+    }
+    $this->manager->publishAllCurrentRevisions($context);
+    $context['sandbox']['current_running']++;
+    $context['message'] = t('Running Batch "@id"',
+      ['@id' => $context['sandbox']['current_running']]
+    );
+
+    // Inform the batch engine that we are not finished,
+    // and provide an estimation of the completion level we reached.
+    if ($context['sandbox']['progress'] != $context['sandbox']['max']) {
+      $context['finished'] = ($context['sandbox']['progress'] >= $context['sandbox']['max']);
+    }
+    \Drupal::logger('wbm2cm')->notice('Revision study until %index', [
+      '%index' => $context['sandbox']['current_index'],
+    ]);
+
+    if ($context['finished']) {
+      $this->setStepComplete('stepIntermediare');
+      $context['message'] = 'Publish all revisions.';
+    }
+  }
+
   /**
    * Entity state maps are migrated.
    */
@@ -252,6 +277,31 @@ class BatchManager {
       $context['message'] = 'Importing entity moderation states from key value storage to Content Moderation.';
     }
 
+  }
+
+  public function stepLast(&$context) {
+    if ($this->isStepSkipped('stepLast')) {
+      return;
+    }
+    $this->manager->giveTrueStateToCurrentRevisions($context);
+    $context['sandbox']['current_running']++;
+    $context['message'] = t('Running Batch "@id"',
+      ['@id' => $context['sandbox']['current_running']]
+    );
+
+    // Inform the batch engine that we are not finished,
+    // and provide an estimation of the completion level we reached.
+    if ($context['sandbox']['progress'] != $context['sandbox']['max']) {
+      $context['finished'] = ($context['sandbox']['progress'] >= $context['sandbox']['max']);
+    }
+    \Drupal::logger('wbm2cm')->notice('Revision study until %index', [
+      '%index' => $context['sandbox']['current_index'],
+    ]);
+
+    if ($context['finished']) {
+      $this->setStepComplete('stepLast');
+      $context['message'] = 'Publish all revisions.';
+    }
   }
 
   /**

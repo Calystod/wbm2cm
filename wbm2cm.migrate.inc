@@ -35,9 +35,19 @@ function wbm2cm_step6(&$context) {
   $manager->step6($context);
 }
 
+function wbm2cm_stepIntermediare(&$context) {
+  $manager = \Drupal::service('wbm2cm.batch_manager');
+  $manager->stepIntermediare($context);
+}
+
 function wbm2cm_step7(&$context) {
   $manager = \Drupal::service('wbm2cm.batch_manager');
   $manager->step7($context);
+}
+
+function wbm2cm_stepLast(&$context) {
+  $manager = \Drupal::service('wbm2cm.batch_manager');
+  $manager->stepLast($context);
 }
 
 function wbm2cm_step8(&$context) {
