@@ -317,10 +317,6 @@ class MigrateManager {
 
         $state_map_key = "state_map.{$info_revision['entity_type']}.{$info_revision['bundle_id']}.{$revision_id}.{$entity->language()->getId()}";
 
-        if($entity->moderation_state->target_id == NULL) {
-          print("COUCOU\n");
-        }
-
         $this->stateMapStore->set($state_map_key, $entity->moderation_state->target_id);
 
 
@@ -474,7 +470,6 @@ class MigrateManager {
     $publish_state = $states[array_search(TRUE, array_column($states, 'published'))]["id"];
 
     if (empty($context['sandbox'])) {
-//      $this->migrateStore->set('unpublished_entity', []);
 
       $data = $this->migrateStore->get('current_revisions');
 
@@ -488,37 +483,26 @@ class MigrateManager {
     $limit = 50;
 
     $revisions_process = array_slice($context['sandbox']['values'], $context['sandbox']['current_index'], $limit, TRUE);
-    $unpublish_entities = [];
 
     foreach ($revisions_process as $revision_id => $info_revision) {
       $default_revision = \Drupal::entityTypeManager()
         ->getStorage($info_revision['entity_type'])
         ->load($info_revision['entity_id']);
 
-      $default_revision->moderation_state->value = $publish_state;
+      $default_revision->set('moderation_state', $publish_state, FALSE);
 
-      $default_revision->updateLoadedRevisionId();
+      // Loop through each language that has a translation.
+      foreach ($default_revision->getTranslationLanguages(FALSE) as $language) {
 
-        // Loop through each language that has a translation.
-        foreach ($default_revision->getTranslationLanguages(FALSE) as $language) {
+        // Load the translated revision.
+        $language_revision = $default_revision->getTranslation($language->getId());
 
-            // Load the translated revision.
-            $language_revision = $default_revision->getTranslation($language->getId());
-
-
-          $language_revision->moderation_state->value = $publish_state;
-          $language_revision->updateLoadedRevisionId();
-
+        $language_revision->set('moderation_state', $publish_state, FALSE);
       }
 
       $context['sandbox']['progress']++;
       $context['sandbox']['current_index']++;
     }
-
-//    $list_entity_unpublished = $this->migrateStore->get('unpublished_entity');
-//    $list_entity_unpublished += $unpublish_entities;
-//    $this->migrateStore->set('unpublished_entity', $list_entity_unpublished);
-
 
   }
 
@@ -538,8 +522,6 @@ class MigrateManager {
     $limit = 50;
 
     $revisions_process = array_slice($context['sandbox']['values'], $context['sandbox']['current_index'], $limit, TRUE);
-//    $list_entity_unpublished = $this->migrateStore->get('unpublished_entity');
-
 
     foreach ($revisions_process as $revision_id => $info_revision) {
       $default_revision = \Drupal::entityTypeManager()
@@ -560,8 +542,8 @@ class MigrateManager {
         continue;
       }
 
-      $default_revision->moderation_state->value = $state_id;
-      $default_revision->updateLoadedRevisionId();
+      $default_revision->set('moderation_state', $state_id, FALSE);
+
       $this->stateMapStore->delete($state_map_key);
 
       $languages = $default_revision->getTranslationLanguages(FALSE);
@@ -587,9 +569,8 @@ class MigrateManager {
           continue;
         }
 
-        // Set the state.
-        $translated_entity->moderation_state->value = $state_id;
-        $translated_entity->updateLoadedRevisionId();
+        // Set the state for the translation.
+        $translated_entity->set('moderation_state', $state_id, FALSE);
 
         $this->stateMapStore->delete($state_map_key);
       }
@@ -682,8 +663,8 @@ class MigrateManager {
         $language_ids[] = $language->getId();
       }
 
-      $entity->moderation_state->value = $state_id;
-      $entity->updateLoadedRevisionId();
+      $entity->set('moderation_state', $state_id, FALSE);
+
       $this->logger->debug('Setting Workbench Moderation state field on id:%id, revision:%revision_id to %state', [
         '%id' => $entity->id(),
         '%revision_id' => $revision_id,
@@ -716,8 +697,8 @@ class MigrateManager {
         }
 
         // Set the state.
-        $translated_entity->moderation_state->value = $state_id;
-        $translated_entity->updateLoadedRevisionId();
+        $translated_entity->set('moderation_state', $state_id, FALSE);
+
         $this->logger->debug('Setting Workbench Moderation state field on id:%id, revision:%revision_id to %state', [
           '%id' => $translated_entity->id(),
           '%revision_id' => $revision_id,
@@ -747,7 +728,7 @@ class MigrateManager {
       'states',
       'transitions',
       'enabled_bundles',
-      'current_revisions'
+      'current_revisions',
     ]);
   }
 
